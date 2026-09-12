@@ -86,7 +86,7 @@ func (a *Arch) load() error {
 		if _, err := a.fd.Seek(0, io.SeekStart); err != nil {
 			return err
 		}
-		if _, err := encodeStream(bytes.NewReader(nil), a.fd, a.options); err != nil {
+		if err := encodeStream(bytes.NewReader(nil), a.fd, a.options); err != nil {
 			return err
 		}
 		if err := a.fd.Sync(); err != nil {
@@ -323,7 +323,7 @@ func (a *Arch) replace(src io.Reader, perm fs.FileMode) (retErr error) {
 	if err := temp.Chmod(mode); err != nil {
 		return err
 	}
-	if _, err := encodeStream(src, temp, a.options); err != nil {
+	if err := encodeStream(src, temp, a.options); err != nil {
 		return err
 	}
 	if err := temp.Sync(); err != nil {

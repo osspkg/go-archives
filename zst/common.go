@@ -73,6 +73,33 @@ type readerOptions struct {
 }
 
 func (o Options) normalized() (Options, readerOptions, error) {
+	o.setDefaults()
+	if o.FrameSize > o.MaxOutputSize {
+		o.FrameSize = o.MaxOutputSize
+	}
+	if err := validateOptionValues(o); err != nil {
+		return Options{}, readerOptions{}, err
+	}
+	if err := validateOptionBounds(o); err != nil {
+		return Options{}, readerOptions{}, err
+	}
+	if err := validateSkippableFrames(o); err != nil {
+		return Options{}, readerOptions{}, err
+	}
+	dictionary, err := normalizeDictionary(o)
+	if err != nil {
+		return Options{}, readerOptions{}, err
+	}
+	ro := readerOptions{
+		maxWindowSize:    uint64(o.MaxWindowSize),
+		maxOutputSize:    uint64(o.MaxOutputSize),
+		maxSkippableSize: uint64(o.MaxSkippableSize),
+		dictionary:       dictionary,
+	}
+	return o, ro, nil
+}
+
+func (o *Options) setDefaults() {
 	if o.CompressionLevel == 0 {
 		o.CompressionLevel = DefaultCompressionLevel
 	}
@@ -94,45 +121,56 @@ func (o Options) normalized() (Options, readerOptions, error) {
 	if o.MaxSkippableSize == 0 {
 		o.MaxSkippableSize = DefaultMaxSkippableSize
 	}
-	if o.FrameSize > o.MaxOutputSize {
-		o.FrameSize = o.MaxOutputSize
-	}
+}
+
+func validateOptionValues(o Options) error {
 	if o.CompressionLevel < 1 || o.CompressionLevel > 22 ||
 		o.FrameSize < 1 || o.BlockSize < 1 || o.BlockSize > DefaultBlockSize ||
 		o.WindowSize < 1 || o.MaxWindowSize < 1<<10 || o.MaxOutputSize < 0 ||
 		o.MaxSkippableSize < 0 || o.WindowSize > o.MaxWindowSize {
-		return Options{}, readerOptions{}, ErrResourceLimit
+		return ErrResourceLimit
 	}
+	return nil
+}
+
+func validateOptionBounds(o Options) error {
 	if o.MaxWindowSize > int64(^uint32(0))<<10 {
-		return Options{}, readerOptions{}, ErrResourceLimit
+		return ErrResourceLimit
 	}
 	maxInt := int64(^uint(0) >> 1)
 	if o.FrameSize > maxInt || o.BlockSize > maxInt || o.WindowSize > maxInt {
-		return Options{}, readerOptions{}, ErrResourceLimit
+		return ErrResourceLimit
 	}
+	return nil
+}
+
+func validateSkippableFrames(o Options) error {
 	for _, payload := range o.SkippableFrames {
 		if int64(len(payload)) > o.MaxSkippableSize || uint64(len(payload)) > uint64(^uint32(0)) {
-			return Options{}, readerOptions{}, ErrResourceLimit
+			return ErrResourceLimit
 		}
 	}
-	if int64(len(o.Dictionary)) > o.MaxWindowSize {
-		return Options{}, readerOptions{}, ErrResourceLimit
-	}
+	return nil
+}
 
+func normalizeDictionary(o Options) ([]byte, error) {
+	if int64(len(o.Dictionary)) > o.MaxWindowSize {
+		return nil, ErrResourceLimit
+	}
 	formattedDictionary := isFormattedDictionary(o.Dictionary)
 	if len(o.Dictionary) != 0 && len(o.Dictionary) < 8 {
-		return Options{}, readerOptions{}, ErrInvalidFormat
+		return nil, ErrInvalidFormat
 	}
 	if o.DictionaryID != 0 && len(o.Dictionary) == 0 {
-		return Options{}, readerOptions{}, ErrInvalidFormat
+		return nil, ErrInvalidFormat
 	}
 	if formattedDictionary {
 		id := binary.LittleEndian.Uint32(o.Dictionary[4:8])
 		if id == 0 || (o.DictionaryID != 0 && o.DictionaryID != id) {
-			return Options{}, readerOptions{}, ErrInvalidFormat
+			return nil, ErrInvalidFormat
 		}
 	} else if len(o.Dictionary) != 0 && o.DictionaryID == 0 {
-		return Options{}, readerOptions{}, ErrUnsupported
+		return nil, ErrUnsupported
 	}
 	// klauspost/compress accepts the official formatted dictionary only. Raw
 	// dictionaries remain accepted for compatibility, but are not referenced
@@ -141,13 +179,7 @@ func (o Options) normalized() (Options, readerOptions, error) {
 	if !formattedDictionary {
 		dictionary = nil
 	}
-	ro := readerOptions{
-		maxWindowSize:    uint64(o.MaxWindowSize),
-		maxOutputSize:    uint64(o.MaxOutputSize),
-		maxSkippableSize: uint64(o.MaxSkippableSize),
-		dictionary:       dictionary,
-	}
-	return o, ro, nil
+	return dictionary, nil
 }
 
 func writeAll(w io.Writer, p []byte) error {

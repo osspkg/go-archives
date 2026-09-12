@@ -55,7 +55,7 @@ func TestBlockSizeFields(t *testing.T) {
 	}
 	data := bytes.Repeat([]byte("block sizes "), 1000)
 	var original bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &original, options); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &original, options); err != nil {
 		t.Fatal(err)
 	}
 	raw := original.Bytes()

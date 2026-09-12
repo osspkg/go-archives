@@ -14,7 +14,7 @@ import (
 func TestStreamRoundTrip(t *testing.T) {
 	data := bytes.Repeat([]byte("zstandard data "), 10000)
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: 1 << 16}); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: 1 << 16}); err != nil {
 		t.Fatal(err)
 	}
 	if compressed.Len() >= len(data) {
@@ -33,7 +33,7 @@ func TestStreamRoundTrip(t *testing.T) {
 func TestStreamSkippableAndRLE(t *testing.T) {
 	data := bytes.Repeat([]byte{'x'}, 100000)
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, Options{
+	if err := encodeStream(bytes.NewReader(data), &compressed, Options{
 		FrameSize:       1 << 16,
 		SkippableFrames: [][]byte{[]byte("metadata")},
 	}); err != nil {
@@ -54,7 +54,7 @@ func TestRawDictionary(t *testing.T) {
 	data := []byte("dictionary-aware payload")
 	var compressed bytes.Buffer
 	options := Options{Dictionary: dictionary, DictionaryID: 40000}
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, options); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, options); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := NewReaderWithOptions(bytes.NewReader(compressed.Bytes()), options)
@@ -74,7 +74,7 @@ func TestConfiguredWindowSize(t *testing.T) {
 	data := bytes.Repeat([]byte("window "), 1000)
 	options := Options{FrameSize: int64(len(data)), WindowSize: 1024, BlockSize: 1024}
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, options); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, options); err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := io.ReadAll(NewReader(bytes.NewReader(compressed.Bytes())))
@@ -89,7 +89,7 @@ func TestConfiguredWindowSize(t *testing.T) {
 func TestSmallBlockSize(t *testing.T) {
 	data := []byte("small block size")
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, Options{BlockSize: 1}); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, Options{BlockSize: 1}); err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := io.ReadAll(NewReader(bytes.NewReader(compressed.Bytes())))
@@ -104,7 +104,7 @@ func TestSmallBlockSize(t *testing.T) {
 func TestLargeCompressedBlock(t *testing.T) {
 	data := bytes.Repeat([]byte("large compressed block with repeated words "), 30000)
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: int64(len(data))}); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: int64(len(data))}); err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := io.ReadAll(NewReader(bytes.NewReader(compressed.Bytes())))
@@ -122,7 +122,7 @@ func TestExternalZstdCompatibility(t *testing.T) {
 	}
 	data := bytes.Repeat([]byte("external compatibility "), 5000)
 	var compressed bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: 1 << 15}); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &compressed, Options{FrameSize: 1 << 15}); err != nil {
 		t.Fatal(err)
 	}
 	decode := exec.Command("zstd", "-q", "-d", "-c")
@@ -193,7 +193,7 @@ func TestFormattedDictionaryCompatibility(t *testing.T) {
 		t.Fatal("formatted dictionary mismatch")
 	}
 	var own bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader(data), &own, Options{Dictionary: dictionary}); err != nil {
+	if err := encodeStream(bytes.NewReader(data), &own, Options{Dictionary: dictionary}); err != nil {
 		t.Fatal(err)
 	}
 	cmd = exec.Command("zstd", "-q", "-d", "-D", dictPath, "-c")
@@ -210,7 +210,7 @@ func TestFormattedDictionaryCompatibility(t *testing.T) {
 func TestMalformedStreamsAndLimits(t *testing.T) {
 	base := make([]byte, 0)
 	var encoded bytes.Buffer
-	if _, err := encodeStream(bytes.NewReader([]byte("payload")), &encoded, Options{}); err != nil {
+	if err := encodeStream(bytes.NewReader([]byte("payload")), &encoded, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	base = encoded.Bytes()

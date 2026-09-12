@@ -100,7 +100,7 @@ func (a *Arch) load() error {
 		if _, err := a.fd.Seek(0, io.SeekStart); err != nil {
 			return err
 		}
-		if _, err := encodeStream(bytes.NewReader(nil), a.fd, a.options); err != nil {
+		if err := encodeStream(bytes.NewReader(nil), a.fd, a.options); err != nil {
 			return err
 		}
 		if err := a.fd.Sync(); err != nil {
@@ -337,7 +337,7 @@ func (a *Arch) replace(src io.Reader, perm fs.FileMode) (retErr error) {
 	if err := temp.Chmod(mode); err != nil {
 		return err
 	}
-	if _, err := encodeStream(src, temp, a.options); err != nil {
+	if err := encodeStream(src, temp, a.options); err != nil {
 		return err
 	}
 	if err := temp.Sync(); err != nil {
@@ -403,64 +403,64 @@ func validateExportName(name string) error {
 	return nil
 }
 
-func encodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) {
+func encodeStream(src io.Reader, dst io.Writer, options Options) error {
 	var err error
 	options, err = options.normalized()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	header, err := makeStreamHeader(checkCRC64)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if err := writeAll(dst, header); err != nil {
-		return 0, err
+		return err
 	}
 
 	blockHeader, err := makeBlockHeader(options.DictionarySize)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if err := writeAll(dst, blockHeader); err != nil {
-		return 0, err
+		return err
 	}
 	sum, err := newChecksum(checkCRC64)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	counting := &countingWriter{w: dst}
-	compressedData, uncompressed, err := encodeLZMA2(src, counting, options.DictionarySize, sum, options.MaxOutputSize)
+	compressedData, uncompressed, err := encodeLZMA2(src, counting, sum, options.MaxOutputSize)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if compressedData != counting.n {
-		return 0, ErrInvalidFormat
+		return ErrInvalidFormat
 	}
 	check := sum.Sum()
 	unpadded := int64(len(blockHeader)) + compressedData + int64(len(check))
 	padding := int((4 - unpadded%4) % 4)
 	if err := writeAll(dst, make([]byte, padding)); err != nil {
-		return 0, err
+		return err
 	}
 	if err := writeAll(dst, check); err != nil {
-		return 0, err
+		return err
 	}
 
 	index, err := makeIndex([]indexRecord{{unpaddedSize: unpadded, uncompressedSize: uncompressed}})
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if err := writeAll(dst, index); err != nil {
-		return 0, err
+		return err
 	}
 	footer, err := makeStreamFooter(checkCRC64, int64(len(index)))
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if err := writeAll(dst, footer); err != nil {
-		return 0, err
+		return err
 	}
-	return uncompressed, nil
+	return nil
 }
 
 func decodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) {
@@ -471,82 +471,14 @@ func decodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) 
 	}
 	br := bufio.NewReaderSize(src, 32<<10)
 	input := &byteReader{r: br}
-	var header [streamHeaderSize]byte
-	if _, err := io.ReadFull(br, header[:]); err != nil {
-		return 0, err
-	}
-	check, err := parseStreamHeader(header[:])
-	if err != nil {
-		return 0, fmt.Errorf("parse stream header: %w", err)
-	}
-	checkLen, err := checksumSize(check)
+	check, checkLen, err := readStreamHeader(br)
 	if err != nil {
 		return 0, err
 	}
 	output := &decodeOutput{dst: dst, buf: make([]byte, 0, 32<<10), max: options.MaxOutputSize}
-	records := make([]indexRecord, 0, 1)
-	for {
-		first, err := input.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		if first == 0 {
-			break
-		}
-		block, err := parseBlockHeader(input, first, options)
-		if err != nil {
-			return 0, fmt.Errorf("parse block header: %w", err)
-		}
-		sum, err := newChecksum(check)
-		if err != nil {
-			return 0, err
-		}
-		output.sum = sum
-		blockReader := interface{ ReadByte() (byte, error) }(input)
-		if block.compressedSize >= 0 {
-			blockReader = &limitedByteReader{r: input, remaining: block.compressedSize}
-		}
-		blockInput := &countedByteReader{r: blockReader}
-		before := output.count
-		compressedData, err := decodeLZMA2(blockInput, output, block.dictionarySize)
-		if err != nil {
-			return 0, fmt.Errorf("decode lzma2: %w", err)
-		}
-		if err := output.flush(); err != nil {
-			return 0, fmt.Errorf("write decoded data: %w", err)
-		}
-		if compressedData != blockInput.n {
-			return 0, fmt.Errorf("lzma size mismatch: %w", ErrInvalidFormat)
-		}
-		actualUncompressed := output.count - before
-		if block.uncompressedSize >= 0 && block.uncompressedSize != actualUncompressed {
-			return 0, fmt.Errorf("block uncompressed size: %w", ErrInvalidFormat)
-		}
-		if block.compressedSize >= 0 && block.compressedSize != compressedData {
-			return 0, fmt.Errorf("block compressed size: %w", ErrInvalidFormat)
-		}
-		unpadded := block.headerSize + compressedData + int64(checkLen)
-		padding := int((4 - unpadded%4) % 4)
-		for i := 0; i < padding; i++ {
-			b, err := input.ReadByte()
-			if err != nil {
-				return 0, fmt.Errorf("read block padding: %w", err)
-			}
-			if b != 0 {
-				return 0, fmt.Errorf("block padding: %w", ErrInvalidFormat)
-			}
-		}
-		actualCheck := make([]byte, checkLen)
-		if _, err := io.ReadFull(br, actualCheck); err != nil {
-			return 0, fmt.Errorf("read block check: %w", err)
-		}
-		if !bytes.Equal(actualCheck, sum.Sum()) {
-			return 0, fmt.Errorf("block check got %x want %x: %w", actualCheck, sum.Sum(), ErrInvalidFormat)
-		}
-		records = append(records, indexRecord{unpaddedSize: unpadded, uncompressedSize: actualUncompressed})
-		if len(records) > 1<<20 {
-			return 0, ErrResourceLimit
-		}
+	records, err := decodeBlocks(input, br, output, options, check, checkLen)
+	if err != nil {
+		return 0, err
 	}
 
 	index, err := parseIndex(input, records)
@@ -558,33 +490,140 @@ func decodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) 
 		return 0, fmt.Errorf("read footer: %w", err)
 	}
 	backward, err := parseStreamFooter(footer[:], check)
-	if err != nil || backward != int64(len(index)) {
-		if err != nil {
-			return 0, fmt.Errorf("parse footer: %w", err)
-		}
+	if err != nil {
+		return 0, fmt.Errorf("parse footer: %w", err)
+	}
+	if backward != int64(len(index)) {
 		return 0, fmt.Errorf("footer index size %d != %d: %w", backward, len(index), ErrInvalidFormat)
 	}
+	if err := readStreamPadding(input); err != nil {
+		return 0, err
+	}
+	return output.count, nil
+}
+
+func readStreamHeader(br *bufio.Reader) (byte, int, error) {
+	var header [streamHeaderSize]byte
+	if _, err := io.ReadFull(br, header[:]); err != nil {
+		return 0, 0, err
+	}
+	check, err := parseStreamHeader(header[:])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse stream header: %w", err)
+	}
+	checkLen, err := checksumSize(check)
+	if err != nil {
+		return 0, 0, err
+	}
+	return check, checkLen, nil
+}
+
+func decodeBlocks(input *byteReader, br *bufio.Reader, output *decodeOutput, options Options, check byte, checkLen int) ([]indexRecord, error) {
+	records := make([]indexRecord, 0, 1)
+	for {
+		first, err := input.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if first == 0 {
+			break
+		}
+		record, err := decodeBlock(input, br, output, options, first, check, checkLen)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+		if len(records) > 1<<20 {
+			return nil, ErrResourceLimit
+		}
+	}
+	return records, nil
+}
+
+func decodeBlock(input *byteReader, br *bufio.Reader, output *decodeOutput, options Options, first, check byte, checkLen int) (indexRecord, error) {
+	block, err := parseBlockHeader(input, first, options)
+	if err != nil {
+		return indexRecord{}, fmt.Errorf("parse block header: %w", err)
+	}
+	sum, err := newChecksum(check)
+	if err != nil {
+		return indexRecord{}, err
+	}
+	output.sum = sum
+	blockReader := interface{ ReadByte() (byte, error) }(input)
+	if block.compressedSize >= 0 {
+		blockReader = &limitedByteReader{r: input, remaining: block.compressedSize}
+	}
+	blockInput := &countedByteReader{r: blockReader}
+	before := output.count
+	compressedData, err := decodeLZMA2(blockInput, output, block.dictionarySize)
+	if err != nil {
+		return indexRecord{}, fmt.Errorf("decode lzma2: %w", err)
+	}
+	if err := output.flush(); err != nil {
+		return indexRecord{}, fmt.Errorf("write decoded data: %w", err)
+	}
+	if compressedData != blockInput.n {
+		return indexRecord{}, fmt.Errorf("lzma size mismatch: %w", ErrInvalidFormat)
+	}
+	actualUncompressed := output.count - before
+	if block.uncompressedSize >= 0 && block.uncompressedSize != actualUncompressed {
+		return indexRecord{}, fmt.Errorf("block uncompressed size: %w", ErrInvalidFormat)
+	}
+	if block.compressedSize >= 0 && block.compressedSize != compressedData {
+		return indexRecord{}, fmt.Errorf("block compressed size: %w", ErrInvalidFormat)
+	}
+	unpadded := block.headerSize + compressedData + int64(checkLen)
+	if err := readBlockPadding(input, unpadded); err != nil {
+		return indexRecord{}, err
+	}
+	actualCheck := make([]byte, checkLen)
+	if _, err := io.ReadFull(br, actualCheck); err != nil {
+		return indexRecord{}, fmt.Errorf("read block check: %w", err)
+	}
+	expectedCheck := sum.Sum()
+	if !bytes.Equal(actualCheck, expectedCheck) {
+		return indexRecord{}, fmt.Errorf("block check got %x want %x: %w", actualCheck, expectedCheck, ErrInvalidFormat)
+	}
+	return indexRecord{unpaddedSize: unpadded, uncompressedSize: actualUncompressed}, nil
+}
+
+func readBlockPadding(input *byteReader, unpadded int64) error {
+	padding := int((4 - unpadded%4) % 4)
+	for i := 0; i < padding; i++ {
+		b, err := input.ReadByte()
+		if err != nil {
+			return fmt.Errorf("read block padding: %w", err)
+		}
+		if b != 0 {
+			return fmt.Errorf("block padding: %w", ErrInvalidFormat)
+		}
+	}
+	return nil
+}
+
+func readStreamPadding(input *byteReader) error {
 	padding := 0
 	for {
 		b, err := input.ReadByte()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			return 0, err
+			return err
 		}
 		if b != 0 {
-			return 0, ErrUnsupported
+			return ErrUnsupported
 		}
 		padding++
 		if padding > 1<<20 {
-			return 0, ErrResourceLimit
+			return ErrResourceLimit
 		}
 	}
 	if padding%4 != 0 {
-		return 0, ErrInvalidFormat
+		return ErrInvalidFormat
 	}
-	return output.count, nil
+	return nil
 }
 
 type countingWriter struct {

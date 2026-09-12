@@ -345,131 +345,11 @@ func (s *lzmaState) decodeOne(rc *rangeDecoder, out *decodeOutput, position int6
 		return err
 	}
 	if matchBit == 0 {
-		b, err := s.decodeLiteralChecked(rc, position, *previous)
-		if err != nil {
-			return err
-		}
-		s.dict.put(b)
-		if err := out.emit(b); err != nil {
-			return err
-		}
-		*previous = b
-		if s.state < 4 {
-			s.state = 0
-		} else if s.state < 10 {
-			s.state -= 3
-		} else {
-			s.state -= 6
-		}
-		return nil
+		return s.decodeLiteral(rc, out, position, previous)
 	}
-
-	isRep, err := rc.decodeBit(&s.isRep[s.state])
+	length, matchLength, err := s.decodeMatch(rc, posState)
 	if err != nil {
 		return err
-	}
-	length := 0
-	matchLength := 0
-	if isRep == 1 {
-		if bit, err := rc.decodeBit(&s.isRepG0[s.state]); err != nil {
-			return err
-		} else if bit == 0 {
-			if bit, err = rc.decodeBit(&s.isRep0Long[s.state*numPosStates+posState]); err != nil {
-				return err
-			} else if bit == 0 {
-				if s.state < 7 {
-					s.state = 9
-				} else {
-					s.state = 11
-				}
-				matchLength = 1
-			} else {
-				if s.state < 7 {
-					s.state = 8
-				} else {
-					s.state = 11
-				}
-				length, err = s.decodeRepLen(rc, posState)
-				if err != nil {
-					return err
-				}
-			}
-		} else {
-			var distance uint32
-			if bit, err = rc.decodeBit(&s.isRepG1[s.state]); err != nil {
-				return err
-			} else if bit == 0 {
-				distance = s.rep[1]
-			} else {
-				if bit, err = rc.decodeBit(&s.isRepG2[s.state]); err != nil {
-					return err
-				} else if bit == 0 {
-					distance = s.rep[2]
-				} else {
-					distance = s.rep[3]
-					s.rep[3] = s.rep[2]
-				}
-				s.rep[2] = s.rep[1]
-			}
-			s.rep[1] = s.rep[0]
-			s.rep[0] = distance
-			if s.state < 7 {
-				s.state = 8
-			} else {
-				s.state = 11
-			}
-			length, err = s.decodeRepLen(rc, posState)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		s.rep[3] = s.rep[2]
-		s.rep[2] = s.rep[1]
-		s.rep[1] = s.rep[0]
-		if s.state < 7 {
-			s.state = 7
-		} else {
-			s.state = 10
-		}
-		length, err = s.decodeLen(rc, posState)
-		if err != nil {
-			return err
-		}
-		lenToPosState := length
-		if lenToPosState > 3 {
-			lenToPosState = 3
-		}
-		posSlot, err := rc.decodeTree(s.posSlot[lenToPosState*64:], 6)
-		if err != nil {
-			return err
-		}
-		if posSlot < startPosModel {
-			s.rep[0] = uint32(posSlot)
-		} else {
-			directBits := int(posSlot/2) - 1
-			distance := uint32(2 | (posSlot & 1))
-			if posSlot < endPosModel {
-				distance <<= uint(directBits)
-				v, err := rc.reverseSpecial(s.posSpecial, int(posSlot), directBits)
-				if err != nil {
-					return err
-				}
-				distance += v
-			} else {
-				distance <<= uint(directBits)
-				v, err := rc.decodeDirect(directBits - numAlignBits)
-				if err != nil {
-					return err
-				}
-				align, err := rc.reverseTree(s.posAlign, numAlignBits)
-				if err != nil {
-					return err
-				}
-				distance += v<<numAlignBits | align
-			}
-			s.rep[0] = distance
-		}
 	}
 	if matchLength == 0 {
 		if length < 0 || length > matchMaxLen-matchMinLen {
@@ -480,7 +360,167 @@ func (s *lzmaState) decodeOne(rc *rangeDecoder, out *decodeOutput, position int6
 	if uint64(s.rep[0]) >= uint64(s.dict.filled) {
 		return fmt.Errorf("match at position %d distance %d with dictionary size %d: %w", position, s.rep[0], s.dict.filled, ErrInvalidFormat)
 	}
-	for i := 0; i < matchLength; i++ {
+	return s.emitMatch(out, previous, matchLength)
+}
+
+func (s *lzmaState) decodeLiteral(rc *rangeDecoder, out *decodeOutput, position int64, previous *byte) error {
+	b, err := s.decodeLiteralChecked(rc, position, *previous)
+	if err != nil {
+		return err
+	}
+	s.dict.put(b)
+	if err := out.emit(b); err != nil {
+		return err
+	}
+	*previous = b
+	s.state = literalState(s.state)
+	return nil
+}
+
+func literalState(state int) int {
+	switch {
+	case state < 4:
+		return 0
+	case state < 10:
+		return state - 3
+	default:
+		return state - 6
+	}
+}
+
+func (s *lzmaState) decodeMatch(rc *rangeDecoder, posState int) (int, int, error) {
+	isRep, err := rc.decodeBit(&s.isRep[s.state])
+	if err != nil {
+		return 0, 0, err
+	}
+	if isRep == 1 {
+		return s.decodeRepMatch(rc, posState)
+	}
+	return s.decodeNewMatch(rc, posState)
+}
+
+func (s *lzmaState) decodeRepMatch(rc *rangeDecoder, posState int) (int, int, error) {
+	bit, err := rc.decodeBit(&s.isRepG0[s.state])
+	if err != nil {
+		return 0, 0, err
+	}
+	if bit == 0 {
+		bit, err = rc.decodeBit(&s.isRep0Long[s.state*numPosStates+posState])
+		if err != nil {
+			return 0, 0, err
+		}
+		if bit == 0 {
+			if s.state < 7 {
+				s.state = 9
+			} else {
+				s.state = 11
+			}
+			return 0, 1, nil
+		}
+		if s.state < 7 {
+			s.state = 8
+		} else {
+			s.state = 11
+		}
+		length, err := s.decodeRepLen(rc, posState)
+		return length, 0, err
+	}
+
+	distance, err := s.decodeRepDistance(rc)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.rep[1] = s.rep[0]
+	s.rep[0] = distance
+	if s.state < 7 {
+		s.state = 8
+	} else {
+		s.state = 11
+	}
+	length, err := s.decodeRepLen(rc, posState)
+	return length, 0, err
+}
+
+func (s *lzmaState) decodeRepDistance(rc *rangeDecoder) (uint32, error) {
+	bit, err := rc.decodeBit(&s.isRepG1[s.state])
+	if err != nil {
+		return 0, err
+	}
+	if bit == 0 {
+		return s.rep[1], nil
+	}
+	bit, err = rc.decodeBit(&s.isRepG2[s.state])
+	if err != nil {
+		return 0, err
+	}
+	if bit == 0 {
+		distance := s.rep[2]
+		s.rep[2] = s.rep[1]
+		return distance, nil
+	}
+	distance := s.rep[3]
+	s.rep[3] = s.rep[2]
+	s.rep[2] = s.rep[1]
+	return distance, nil
+}
+
+func (s *lzmaState) decodeNewMatch(rc *rangeDecoder, posState int) (int, int, error) {
+	s.rep[3] = s.rep[2]
+	s.rep[2] = s.rep[1]
+	s.rep[1] = s.rep[0]
+	if s.state < 7 {
+		s.state = 7
+	} else {
+		s.state = 10
+	}
+	length, err := s.decodeLen(rc, posState)
+	if err != nil {
+		return 0, 0, err
+	}
+	lenToPosState := length
+	if lenToPosState > 3 {
+		lenToPosState = 3
+	}
+	posSlot, err := rc.decodeTree(s.posSlot[lenToPosState*64:], 6)
+	if err != nil {
+		return 0, 0, err
+	}
+	distance, err := s.decodeNewDistance(rc, posSlot)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.rep[0] = distance
+	return length, 0, nil
+}
+
+func (s *lzmaState) decodeNewDistance(rc *rangeDecoder, posSlot uint32) (uint32, error) {
+	if posSlot < startPosModel {
+		return posSlot, nil
+	}
+	directBits := int(posSlot/2) - 1
+	distance := uint32(2 | (posSlot & 1))
+	if posSlot < endPosModel {
+		distance <<= uint(directBits)
+		value, err := rc.reverseSpecial(s.posSpecial, int(posSlot), directBits)
+		if err != nil {
+			return 0, err
+		}
+		return distance + value, nil
+	}
+	distance <<= uint(directBits)
+	value, err := rc.decodeDirect(directBits - numAlignBits)
+	if err != nil {
+		return 0, err
+	}
+	align, err := rc.reverseTree(s.posAlign, numAlignBits)
+	if err != nil {
+		return 0, err
+	}
+	return distance + (value<<numAlignBits | align), nil
+}
+
+func (s *lzmaState) emitMatch(out *decodeOutput, previous *byte, length int) error {
+	for i := 0; i < length; i++ {
 		b, ok := s.dict.get(s.rep[0])
 		if !ok {
 			return ErrInvalidFormat
@@ -511,102 +551,114 @@ func decodeLZMA2(in *countedByteReader, out *decodeOutput, dictSize int64) (int6
 			return in.n, out.flush()
 		}
 		if control == 1 || control == 2 {
-			hi, err := in.ReadByte()
-			if err != nil {
+			if err := decodeUncompressedChunk(in, out, s, control, &previous, &position); err != nil {
 				return 0, err
-			}
-			lo, err := in.ReadByte()
-			if err != nil {
-				return 0, err
-			}
-			if control == 1 {
-				s.dict.reset()
-			}
-			for n := 0; n < (int(hi)<<8|int(lo))+1; n++ {
-				b, err := in.ReadByte()
-				if err != nil {
-					return 0, err
-				}
-				s.dict.put(b)
-				if err := out.emit(b); err != nil {
-					return 0, err
-				}
-				previous = b
-				position++
 			}
 			continue
 		}
 		if control < 0x80 {
 			return 0, ErrInvalidFormat
 		}
-		uncompressed := int64(control&0x1f) << 16
-		b, err := in.ReadByte()
+		uncompressed, compressed, err := readCompressedChunk(in, s, control, &propsSet, &previous)
 		if err != nil {
 			return 0, err
 		}
-		uncompressed |= int64(b) << 8
-		b, err = in.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		uncompressed |= int64(b)
-		uncompressed++
-		compressedByte, err := in.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		compressed := int64(compressedByte) << 8
-		b, err = in.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		compressed |= int64(b)
-		compressed++
-
-		if control&0x40 != 0 {
-			props, err := in.ReadByte()
-			if err != nil {
-				return 0, err
-			}
-			if err := s.setProperties(props); err != nil {
-				return 0, err
-			}
-			propsSet = true
-		} else if !propsSet {
-			return 0, ErrInvalidFormat
-		}
-		if control&0x20 != 0 {
-			s.resetState()
-		}
-		if control&0x40 != 0 && control&0x20 == 0 {
-			// setProperties already resets the probability state.
-		}
-		if control&0xe0 == 0xe0 {
-			s.dict.reset()
-			previous = 0
-		}
-
-		chunk := &chunkReader{r: in, remaining: compressed}
-		rc, err := newRangeDecoder(chunk)
-		if err != nil {
-			return 0, err
-		}
-		chunkOutputStart := out.count
-		for out.count-chunkOutputStart < uncompressed {
-			before := out.count
-			if err := s.decodeOne(rc, out, position, &previous); err != nil {
-				return 0, err
-			}
-			produced := out.count - before
-			if produced <= 0 || out.count-chunkOutputStart > uncompressed {
-				return 0, ErrInvalidFormat
-			}
-			position += produced
-		}
-		if err := chunk.discard(); err != nil {
+		if err := decodeCompressedChunk(in, out, s, uncompressed, compressed, &previous, &position); err != nil {
 			return 0, err
 		}
 	}
+}
+
+func decodeUncompressedChunk(in *countedByteReader, out *decodeOutput, s *lzmaState, control byte, previous *byte, position *int64) error {
+	hi, err := in.ReadByte()
+	if err != nil {
+		return err
+	}
+	lo, err := in.ReadByte()
+	if err != nil {
+		return err
+	}
+	if control == 1 {
+		s.dict.reset()
+	}
+	size := (int(hi)<<8 | int(lo)) + 1
+	for n := 0; n < size; n++ {
+		b, err := in.ReadByte()
+		if err != nil {
+			return err
+		}
+		s.dict.put(b)
+		if err := out.emit(b); err != nil {
+			return err
+		}
+		*previous = b
+		(*position)++
+	}
+	return nil
+}
+
+func readCompressedChunk(in *countedByteReader, s *lzmaState, control byte, propsSet *bool, previous *byte) (int64, int64, error) {
+	uncompressed, err := readChunkSize(in, control&0x1f)
+	if err != nil {
+		return 0, 0, err
+	}
+	compressed, err := readChunkSize(in, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	if control&0x40 != 0 {
+		props, err := in.ReadByte()
+		if err != nil {
+			return 0, 0, err
+		}
+		if err := s.setProperties(props); err != nil {
+			return 0, 0, err
+		}
+		*propsSet = true
+	} else if !*propsSet {
+		return 0, 0, ErrInvalidFormat
+	}
+	if control&0x20 != 0 {
+		s.resetState()
+	}
+	if control&0xe0 == 0xe0 {
+		s.dict.reset()
+		*previous = 0
+	}
+	return uncompressed, compressed, nil
+}
+
+func readChunkSize(in *countedByteReader, high byte) (int64, error) {
+	first, err := in.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	second, err := in.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	return (int64(high)<<16 | int64(first)<<8 | int64(second)) + 1, nil
+}
+
+func decodeCompressedChunk(in *countedByteReader, out *decodeOutput, s *lzmaState, uncompressed, compressed int64, previous *byte, position *int64) error {
+	chunk := &chunkReader{r: in, remaining: compressed}
+	rc, err := newRangeDecoder(chunk)
+	if err != nil {
+		return err
+	}
+	chunkOutputStart := out.count
+	for out.count-chunkOutputStart < uncompressed {
+		before := out.count
+		if err := s.decodeOne(rc, out, *position, previous); err != nil {
+			return err
+		}
+		produced := out.count - before
+		if produced <= 0 || out.count-chunkOutputStart > uncompressed {
+			return ErrInvalidFormat
+		}
+		*position += produced
+	}
+	return chunk.discard()
 }
 
 type rangeDecoder struct {
@@ -1016,7 +1068,7 @@ func (e *lzmaEncoder) bytes() []byte {
 	return e.rng.out.Bytes()
 }
 
-func encodeLZMA2(r io.Reader, w io.Writer, dictSize int64, sum *checksum, maxOutput int64) (int64, int64, error) {
+func encodeLZMA2(r io.Reader, w io.Writer, sum *checksum, maxOutput int64) (int64, int64, error) {
 	const props byte = 0x5d
 	var current *lzmaEncoder
 	var position int64

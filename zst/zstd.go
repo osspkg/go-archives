@@ -136,7 +136,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 	if n == 0 && err == nil {
 		return 0, io.ErrNoProgress
 	}
-	if err == io.EOF && !r.scanner.sawDataFrame {
+	if errors.Is(err, io.EOF) && !r.scanner.sawDataFrame {
 		return n, io.ErrUnexpectedEOF
 	}
 	return n, translateCodecError(err)
@@ -170,7 +170,7 @@ func translateCodecError(err error) error {
 	case errors.Is(err, codec.ErrDecoderSizeExceeded),
 		errors.Is(err, codec.ErrWindowSizeExceeded),
 		errors.Is(err, codec.ErrFrameSizeExceeded):
-		return fmt.Errorf("%w: %v", ErrResourceLimit, err)
+		return fmt.Errorf("%w: %s", ErrResourceLimit, err.Error())
 	case errors.Is(err, codec.ErrMagicMismatch),
 		errors.Is(err, codec.ErrReservedBlockType),
 		errors.Is(err, codec.ErrCompressedSizeTooBig),
@@ -179,7 +179,7 @@ func translateCodecError(err error) error {
 		errors.Is(err, codec.ErrUnknownDictionary),
 		errors.Is(err, codec.ErrFrameSizeMismatch),
 		errors.Is(err, codec.ErrCRCMismatch):
-		return fmt.Errorf("%w: %v", ErrInvalidFormat, err)
+		return fmt.Errorf("%w: %s", ErrInvalidFormat, err.Error())
 	default:
 		return err
 	}
@@ -253,7 +253,7 @@ func (s *frameScanner) Read(p []byte) (int, error) {
 		}
 	}
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			if s.state != scanMagic || !s.sawDataFrame {
 				return n, io.ErrUnexpectedEOF
 			}
@@ -266,116 +266,156 @@ func (s *frameScanner) Read(p []byte) (int, error) {
 func (s *frameScanner) consume(b byte) error {
 	switch s.state {
 	case scanMagic:
-		s.magic[s.magicN] = b
-		s.magicN++
-		if s.magicN != len(s.magic) {
-			return nil
-		}
-		s.magicN = 0
-		magic := binary.LittleEndian.Uint32(s.magic[:])
-		switch {
-		case magic == standardMagic:
-			s.sawDataFrame = true
-			s.state = scanDescriptor
-		case magic >= skippableMagicBase && magic <= skippableMagicBase+15:
-			s.state = scanSkippableSize
-			s.skipSizeN = 0
-		default:
-			return ErrInvalidFormat
-		}
-
+		return s.consumeMagic(b)
 	case scanDescriptor:
-		if b&(1<<3) != 0 {
-			return ErrInvalidFormat
-		}
-		s.hasChecksum = b&(1<<2) != 0
-		s.headerRemain = 0
-		if b&(1<<5) == 0 {
-			s.headerRemain++
-		}
-		switch b & 3 {
-		case 1:
-			s.headerRemain++
-		case 2:
-			s.headerRemain += 2
-		case 3:
-			s.headerRemain += 4
-		}
-		fcsSize := 1 << (b >> 6)
-		if fcsSize == 1 && b&(1<<5) == 0 {
-			fcsSize = 0
-		}
-		s.headerRemain += fcsSize
-		if s.headerRemain == 0 {
-			s.state = scanBlockHeader
-		} else {
-			s.state = scanHeader
-		}
-
+		return s.consumeDescriptor(b)
 	case scanHeader:
-		s.headerRemain--
-		if s.headerRemain == 0 {
-			s.state = scanBlockHeader
-		}
-
+		return s.consumeHeader()
 	case scanBlockHeader:
-		s.blockHeader[s.blockHeaderN] = b
-		s.blockHeaderN++
-		if s.blockHeaderN != len(s.blockHeader) {
-			return nil
-		}
-		s.blockHeaderN = 0
-		header := uint32(s.blockHeader[0]) |
-			uint32(s.blockHeader[1])<<8 |
-			uint32(s.blockHeader[2])<<16
-		blockType := (header >> 1) & 3
-		if blockType == 3 {
-			return ErrInvalidFormat
-		}
-		s.blockLast = header&1 != 0
-		s.blockRemain = uint64(header >> 3)
-		if blockType == 1 {
-			s.blockRemain = 1
-		}
-		if s.blockRemain == 0 {
-			return s.finishBlock()
-		}
-		s.state = scanBlockPayload
-
+		return s.consumeBlockHeader(b)
 	case scanBlockPayload:
-		s.blockRemain--
-		if s.blockRemain == 0 {
-			return s.finishBlock()
-		}
-
+		return s.consumeBlockPayload()
 	case scanChecksum:
-		s.checksumRemain--
-		if s.checksumRemain == 0 {
-			s.state = scanMagic
-		}
-
+		return s.consumeChecksum()
 	case scanSkippableSize:
-		s.skipSize[s.skipSizeN] = b
-		s.skipSizeN++
-		if s.skipSizeN != len(s.skipSize) {
-			return nil
-		}
-		size := uint64(binary.LittleEndian.Uint32(s.skipSize[:]))
-		if size > s.maxSkippable {
-			return ErrResourceLimit
-		}
-		s.blockRemain = size
-		if s.blockRemain == 0 {
-			s.state = scanMagic
-		} else {
-			s.state = scanSkippablePayload
-		}
-
+		return s.consumeSkippableSize(b)
 	case scanSkippablePayload:
-		s.blockRemain--
-		if s.blockRemain == 0 {
-			s.state = scanMagic
-		}
+		return s.consumeSkippablePayload()
+	default:
+		return ErrInvalidFormat
+	}
+}
+
+func (s *frameScanner) consumeMagic(b byte) error {
+	s.magic[s.magicN] = b
+	s.magicN++
+	if s.magicN != len(s.magic) {
+		return nil
+	}
+	s.magicN = 0
+	magic := binary.LittleEndian.Uint32(s.magic[:])
+	switch {
+	case magic == standardMagic:
+		s.sawDataFrame = true
+		s.state = scanDescriptor
+	case magic >= skippableMagicBase && magic <= skippableMagicBase+15:
+		s.state = scanSkippableSize
+		s.skipSizeN = 0
+	default:
+		return ErrInvalidFormat
+	}
+	return nil
+}
+
+func (s *frameScanner) consumeDescriptor(b byte) error {
+	if b&(1<<3) != 0 {
+		return ErrInvalidFormat
+	}
+	s.hasChecksum = b&(1<<2) != 0
+	s.headerRemain = 0
+	if b&(1<<5) == 0 {
+		s.headerRemain++
+	}
+	s.headerRemain += singleSegmentHeaderSize(b & 3)
+	fcsSize := 1 << (b >> 6)
+	if fcsSize == 1 && b&(1<<5) == 0 {
+		fcsSize = 0
+	}
+	s.headerRemain += fcsSize
+	if s.headerRemain == 0 {
+		s.state = scanBlockHeader
+	} else {
+		s.state = scanHeader
+	}
+	return nil
+}
+
+func singleSegmentHeaderSize(flag byte) int {
+	switch flag {
+	case 1:
+		return 1
+	case 2:
+		return 2
+	case 3:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func (s *frameScanner) consumeHeader() error {
+	s.headerRemain--
+	if s.headerRemain == 0 {
+		s.state = scanBlockHeader
+	}
+	return nil
+}
+
+func (s *frameScanner) consumeBlockHeader(b byte) error {
+	s.blockHeader[s.blockHeaderN] = b
+	s.blockHeaderN++
+	if s.blockHeaderN != len(s.blockHeader) {
+		return nil
+	}
+	s.blockHeaderN = 0
+	header := uint32(s.blockHeader[0]) |
+		uint32(s.blockHeader[1])<<8 |
+		uint32(s.blockHeader[2])<<16
+	blockType := (header >> 1) & 3
+	if blockType == 3 {
+		return ErrInvalidFormat
+	}
+	s.blockLast = header&1 != 0
+	s.blockRemain = uint64(header >> 3)
+	if blockType == 1 {
+		s.blockRemain = 1
+	}
+	if s.blockRemain == 0 {
+		return s.finishBlock()
+	}
+	s.state = scanBlockPayload
+	return nil
+}
+
+func (s *frameScanner) consumeBlockPayload() error {
+	s.blockRemain--
+	if s.blockRemain == 0 {
+		return s.finishBlock()
+	}
+	return nil
+}
+
+func (s *frameScanner) consumeChecksum() error {
+	s.checksumRemain--
+	if s.checksumRemain == 0 {
+		s.state = scanMagic
+	}
+	return nil
+}
+
+func (s *frameScanner) consumeSkippableSize(b byte) error {
+	s.skipSize[s.skipSizeN] = b
+	s.skipSizeN++
+	if s.skipSizeN != len(s.skipSize) {
+		return nil
+	}
+	size := uint64(binary.LittleEndian.Uint32(s.skipSize[:]))
+	if size > s.maxSkippable {
+		return ErrResourceLimit
+	}
+	s.blockRemain = size
+	if s.blockRemain == 0 {
+		s.state = scanMagic
+	} else {
+		s.state = scanSkippablePayload
+	}
+	return nil
+}
+
+func (s *frameScanner) consumeSkippablePayload() error {
+	s.blockRemain--
+	if s.blockRemain == 0 {
+		s.state = scanMagic
 	}
 	return nil
 }

@@ -19,14 +19,14 @@ const (
 	maxEncoderWindowSize        = 1 << 29
 )
 
-func encodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) {
+func encodeStream(src io.Reader, dst io.Writer, options Options) error {
 	opts, _, err := options.normalized()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	for i, payload := range opts.SkippableFrames {
 		if err := writeSkippable(dst, uint32(i), payload); err != nil {
-			return 0, err
+			return err
 		}
 	}
 
@@ -38,10 +38,10 @@ func encodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) 
 		switch readErr {
 		case nil:
 			if int64(n) > opts.MaxOutputSize-total {
-				return total, ErrResourceLimit
+				return ErrResourceLimit
 			}
 			if err := encodeFrame(buf[:n], dst, opts); err != nil {
-				return total, err
+				return err
 			}
 			frames++
 			total += int64(n)
@@ -49,28 +49,27 @@ func encodeStream(src io.Reader, dst io.Writer, options Options) (int64, error) 
 			if n == 0 {
 				if frames == 0 {
 					if err := encodeFrame(nil, dst, opts); err != nil {
-						return total, err
+						return err
 					}
 				}
-				return total, nil
+				return nil
 			}
 			if int64(n) > opts.MaxOutputSize-total {
-				return total, ErrResourceLimit
+				return ErrResourceLimit
 			}
 			if err := encodeFrame(buf[:n], dst, opts); err != nil {
-				return total, err
+				return err
 			}
-			total += int64(n)
-			return total, nil
+			return nil
 		case io.EOF:
 			if frames == 0 {
 				if err := encodeFrame(nil, dst, opts); err != nil {
-					return total, err
+					return err
 				}
 			}
-			return total, nil
+			return nil
 		default:
-			return total, readErr
+			return readErr
 		}
 	}
 }

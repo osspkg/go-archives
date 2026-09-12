@@ -40,14 +40,14 @@ func Open(filename string, perm os.FileMode) (*Arch, error) {
 
 	if err := v.rwSignature(); err != nil {
 		if closeErr := file.Close(); closeErr != nil {
-			return nil, fmt.Errorf("write archive signature: %w (close archive: %v)", err, closeErr)
+			return nil, fmt.Errorf("write archive signature: %w (close archive: %s)", err, closeErr.Error())
 		}
 		return nil, fmt.Errorf("write archive signature: %w", err)
 	}
 
 	if err := v.readAllHeaders(); err != nil {
 		if closeErr := file.Close(); closeErr != nil {
-			return nil, fmt.Errorf("read archive: %w (close archive: %v)", err, closeErr)
+			return nil, fmt.Errorf("read archive: %w (close archive: %s)", err, closeErr.Error())
 		}
 		return nil, fmt.Errorf("read archive: %w", err)
 	}
@@ -291,7 +291,7 @@ func (v *Arch) correctSize(size int64, callFunc func()) {
 func (v *Arch) writeRecord(start int64, header []byte, addPadding bool, writeBody func() error) error {
 	writeErr := func(err error) error {
 		if rollbackErr := v.rollback(start); rollbackErr != nil {
-			return fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+			return fmt.Errorf("%w (rollback failed: %s)", err, rollbackErr.Error())
 		}
 		return err
 	}
