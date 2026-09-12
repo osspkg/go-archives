@@ -14,6 +14,13 @@ go get -u go.osspkg.com/archives
 ## Archives
 
 * ar (Unix) - https://en.wikipedia.org/wiki/Ar_(Unix)
+* xz (single-stream XZ) - https://tukaani.org/xz/format.html
+
+The `xz` package provides a pure-Go XZ implementation without external
+processes or runtime dependencies. XZ is a single-stream format, so an
+archive has one logical member whose name is derived from the archive name:
+`data.xz` exposes the member `data`. `OpenWithOptions` can cap the dictionary
+and decompressed output size when processing untrusted archives.
 
 ## License
 
