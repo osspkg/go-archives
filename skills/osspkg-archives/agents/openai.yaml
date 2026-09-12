@@ -1,0 +1,4 @@
+interface:
+  display_name: "Osspkg Archives"
+  short_description: "Use go-archives safely and accurately"
+  default_prompt: "Use $osspkg-archives for go-archives API, format, safety, and validation guidance."
