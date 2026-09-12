@@ -19,3 +19,8 @@ bin/
 .tools/
 vendor/
 config.yaml
+build/
+*.db
+*.db-journal
+*.mmdb
+.env

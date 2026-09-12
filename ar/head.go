@@ -1,11 +1,12 @@
 /*
- *  Copyright (c) 2021-2023 Mikhail Knyazhev <markus621@yandex.ru>. All rights reserved.
+ *  Copyright (c) 2021-2026 Mikhail Knyazhev <markus621@yandex.ru>. All rights reserved.
  *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
 package ar
 
 import (
+	"bytes"
 	"reflect"
 	"strconv"
 	"strings"
@@ -38,6 +39,10 @@ func newBuffer(size int) buffer {
 }
 
 func (v buffer) Write(k kind, d interface{}) error {
+	if k.From < 0 || k.Len < 0 || k.From > len(v) || k.Len > len(v)-k.From {
+		return ErrInvalidParseValue
+	}
+
 	var data []byte
 
 	switch vv := d.(type) {
@@ -63,6 +68,9 @@ func (v buffer) Read(k kind, d interface{}) error {
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
 		return ErrInvalidParseValue
 	}
+	if k.From < 0 || k.Len < 0 || k.From > len(v) || k.Len > len(v)-k.From {
+		return ErrInvalidParseValue
+	}
 
 	data := strings.TrimRight(string(v[k.From:k.From+k.Len]), " /")
 
@@ -72,9 +80,15 @@ func (v buffer) Read(k kind, d interface{}) error {
 
 	switch k.Type {
 	case "string":
+		if rv.Elem().Kind() != reflect.String || !rv.Elem().CanSet() {
+			return ErrInvalidParseValue
+		}
 		rv.Elem().SetString(data)
 		return nil
 	case "int":
+		if rv.Elem().Kind() < reflect.Int || rv.Elem().Kind() > reflect.Int64 || !rv.Elem().CanSet() {
+			return ErrInvalidParseValue
+		}
 		i, err := strconv.ParseInt(data, k.Base, 64)
 		if err != nil {
 			return err
@@ -101,6 +115,13 @@ type Header struct {
 
 // Bytes make string from Header model
 func (v *Header) Bytes() ([]byte, error) {
+	if v == nil {
+		return nil, ErrInvalidParseValue
+	}
+	if v.Size < 0 || v.Size > maxArchiveFileSize || v.Mode < 0 {
+		return nil, ErrInvalidParseValue
+	}
+
 	data := newBuffer(HEAD_SIZE)
 
 	list := map[kind]interface{}{
@@ -124,11 +145,21 @@ func (v *Header) Bytes() ([]byte, error) {
 
 // Parse decode string to Header model
 func (v *Header) Parse(b []byte) error {
+	if v == nil || len(b) != HEAD_SIZE {
+		return ErrInvalidParseValue
+	}
+	if !bytes.Equal(b[endChar.From:endChar.From+endChar.Len], end) {
+		return ErrInvalidFileFormat
+	}
+
 	vv := buffer(b)
+	var owner, group int64
 
 	list := []func() error{
 		func() error { return vv.Read(fileName, &v.FileName) },
 		func() error { return vv.Read(modif, &v.Timestamp) },
+		func() error { return vv.Read(ownerID, &owner) },
+		func() error { return vv.Read(groupID, &group) },
 		func() error { return vv.Read(fileMode, &v.Mode) },
 		func() error { return vv.Read(fileSize, &v.Size) },
 	}
@@ -137,6 +168,9 @@ func (v *Header) Parse(b []byte) error {
 		if err := fn(); err != nil {
 			return err
 		}
+	}
+	if v.Mode < 0 || v.Size < 0 || v.Size > maxArchiveFileSize {
+		return ErrInvalidFileFormat
 	}
 
 	return nil

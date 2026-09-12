@@ -15,9 +15,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"go.osspkg.com/archives/ar"
 )
 
@@ -49,33 +50,35 @@ func setUp(filename string, data string) error {
 }
 
 func TestUnit_ArchiveRead(t *testing.T) {
-	require.NoError(t, setUp("/tmp/demo.deb", demoDeb))
-	os.Remove("/tmp/123/control.tar.gz")
+	root := t.TempDir()
+	demoPath := filepath.Join(root, "demo.deb")
+	outputDir := filepath.Join(root, "123")
+	mustNoError(t, setUp(demoPath, demoDeb))
 
-	fd0, err := ar.Open("/tmp/demo.deb", os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	fd0, err := ar.Open(demoPath, os.ModePerm)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 	defer fd0.Close()
 
 	buf := &bytes.Buffer{}
 
-	require.NoError(t, fd0.Read("debian-binary", buf))
-	require.Equal(t, "2.0\n", buf.String())
+	mustNoError(t, fd0.Read("debian-binary", buf))
+	mustEqual(t, "2.0\n", buf.String())
 
-	require.NoError(t, fd0.Export("control.tar.gz", "/tmp/123/"))
+	mustNoError(t, fd0.Export("control.tar.gz", outputDir))
 
-	fd1, err := os.Open("/tmp/123/control.tar.gz")
-	require.NoError(t, err)
-	require.NotNil(t, fd1)
+	fd1, err := os.Open(filepath.Join(outputDir, "control.tar.gz"))
+	mustNoError(t, err)
+	mustNotNil(t, fd1)
 	defer fd1.Close()
 
 	fd2, err := gzip.NewReader(fd1)
-	require.NoError(t, err)
-	require.NotNil(t, fd2)
+	mustNoError(t, err)
+	mustNotNil(t, fd2)
 	defer fd2.Close()
 
 	fd3 := tar.NewReader(fd2)
-	require.NotNil(t, fd3)
+	mustNotNil(t, fd3)
 
 	list := func() []string {
 		l := make([]string, 0)
@@ -91,39 +94,162 @@ func TestUnit_ArchiveRead(t *testing.T) {
 		}
 	}()
 
-	require.Equal(t, []string{"./", "./md5sums", "./control",
+	mustEqual(t, []string{"./", "./md5sums", "./control",
 		"./conffiles", "./preinst", "./postinst", "./prerm", "./postrm"}, list)
 }
 
 func TestUnit_ArchiveCreate(t *testing.T) {
-	os.Remove("/tmp/demo1.ar")
-	fd0, err := ar.Open("/tmp/demo1.ar", os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "demo1.ar")
+	sourcePath := filepath.Join(root, "ddddd.txt")
+	fd0, err := ar.Open(archivePath, os.ModePerm)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 
-	require.NoError(t, fd0.Write("file1", []byte("file1 text"), os.ModePerm))
-	require.NoError(t, fd0.Write("file2", []byte("file2 text"), os.ModePerm))
-	require.Error(t, fd0.Write("file2", []byte("file2 text!"), os.ModePerm))
-	require.NoError(t, os.WriteFile("/tmp/ddddd.txt", []byte("ddddd file"), fs.ModePerm))
-	require.NoError(t, fd0.Import("/tmp/ddddd.txt", 0))
+	mustNoError(t, fd0.Write("file1", []byte("file1 text"), os.ModePerm))
+	mustNoError(t, fd0.Write("file2", []byte("file2 text"), os.ModePerm))
+	mustError(t, fd0.Write("file2", []byte("file2 text!"), os.ModePerm))
+	mustNoError(t, os.WriteFile(sourcePath, []byte("ddddd file"), fs.ModePerm))
+	mustNoError(t, fd0.Import(sourcePath, 0))
 	fd0.Close()
 
-	fd0, err = ar.Open("/tmp/demo1.ar", os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	fd0, err = ar.Open(archivePath, os.ModePerm)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 	defer fd0.Close()
 
 	buf := &bytes.Buffer{}
 
-	require.NoError(t, fd0.Read("file1", buf))
-	require.Equal(t, "file1 text", buf.String())
+	mustNoError(t, fd0.Read("file1", buf))
+	mustEqual(t, "file1 text", buf.String())
 
 	buf.Reset()
-	require.NoError(t, fd0.Read("file2", buf))
-	require.Equal(t, "file2 text", buf.String())
+	mustNoError(t, fd0.Read("file2", buf))
+	mustEqual(t, "file2 text", buf.String())
 
 	buf.Reset()
-	require.NoError(t, fd0.Read("ddddd.txt", buf))
-	require.Equal(t, "ddddd file", buf.String())
+	mustNoError(t, fd0.Read("ddddd.txt", buf))
+	mustEqual(t, "ddddd file", buf.String())
 
+}
+
+type blockingWriter struct {
+	bytes.Buffer
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.started)
+		<-w.release
+	})
+	return w.Buffer.Write(p)
+}
+
+func TestUnit_ArchiveConcurrentRead(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "concurrent.ar")
+	fd, err := ar.Open(archivePath, 0600)
+	mustNoError(t, err)
+	defer fd.Close()
+	mustNoError(t, fd.Write("a", bytes.Repeat([]byte{'a'}, 512), 0600))
+	mustNoError(t, fd.Write("b", bytes.Repeat([]byte{'b'}, 512), 0600))
+
+	first := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
+	firstDone := make(chan error)
+	go func() {
+		firstDone <- fd.Read("a", first)
+	}()
+	<-first.started
+
+	second := &bytes.Buffer{}
+	secondDone := make(chan error)
+	go func() {
+		secondDone <- fd.Read("b", second)
+	}()
+	mustNoError(t, <-secondDone)
+	close(first.release)
+	mustNoError(t, <-firstDone)
+
+	mustEqual(t, bytes.Repeat([]byte{'a'}, 512), first.Bytes())
+	mustEqual(t, bytes.Repeat([]byte{'b'}, 512), second.Bytes())
+}
+
+func TestUnit_ArchiveListAfterReopen(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "list.ar")
+	fd, err := ar.Open(archivePath, 0600)
+	mustNoError(t, err)
+	mustNoError(t, fd.Write("file", []byte("data"), 0600))
+	mustNoError(t, fd.Close())
+
+	fd, err = ar.Open(archivePath, 0600)
+	mustNoError(t, err)
+	defer fd.Close()
+	mustLen(t, fd.List(), 1)
+}
+
+func TestUnit_ArchiveExportRejectsTraversalAndTruncates(t *testing.T) {
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "archive.ar")
+	fd, err := ar.Open(archivePath, 0600)
+	mustNoError(t, err)
+	defer fd.Close()
+	mustNoError(t, fd.Write("../escaped", []byte("data"), 0600))
+	mustErrorIs(t, fd.Export("../escaped", filepath.Join(root, "out")), ar.ErrInvalidFileName)
+	_, err = os.Stat(filepath.Join(root, "escaped"))
+	mustErrorIs(t, err, fs.ErrNotExist)
+
+	mustNoError(t, fd.Write("file", []byte("new"), 0600))
+	outputDir := filepath.Join(root, "output")
+	mustNoError(t, os.MkdirAll(outputDir, 0700))
+	mustNoError(t, os.WriteFile(filepath.Join(outputDir, "file"), []byte("old-tail"), 0600))
+	mustNoError(t, fd.Export("file", outputDir))
+	data, err := os.ReadFile(filepath.Join(outputDir, "file"))
+	mustNoError(t, err)
+	mustEqual(t, []byte("new"), data)
+}
+
+func TestUnit_ArchiveImportUsesBasename(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source.txt")
+	mustNoError(t, os.WriteFile(source, []byte("source"), 0600))
+
+	fd, err := ar.Open(filepath.Join(root, "import.ar"), 0600)
+	mustNoError(t, err)
+	defer fd.Close()
+	mustNoError(t, fd.Import(source, 0600))
+
+	var data bytes.Buffer
+	mustNoError(t, fd.Read(filepath.Base(source), &data))
+	mustEqual(t, []byte("source"), data.Bytes())
+	mustErrorIs(t, fd.Read(source, io.Discard), ar.ErrFileNotFound)
+}
+
+func TestUnit_ArchiveRejectsInvalidSize(t *testing.T) {
+	root := t.TempDir()
+	header := fmt.Sprintf("%-16s%-12s%-6s%-6s%-8s%-10s%s", "x", "0", "0", "0", "100644", "-1", "`\n")
+	archiveData := append([]byte("!<arch>\n"), []byte(header)...)
+	archiveData = append(archiveData, 'x')
+	archivePath := filepath.Join(root, "invalid.ar")
+	mustNoError(t, os.WriteFile(archivePath, archiveData, 0600))
+
+	_, err := ar.Open(archivePath, 0600)
+	mustError(t, err)
+}
+
+func TestUnit_ArchiveImportRejectsSelf(t *testing.T) {
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "self.ar")
+	fd, err := ar.Open(archivePath, 0600)
+	mustNoError(t, err)
+	defer fd.Close()
+	mustNoError(t, fd.Write("file", []byte("data"), 0600))
+	before, err := os.Stat(archivePath)
+	mustNoError(t, err)
+
+	mustError(t, fd.Import(archivePath, 0600))
+	after, err := os.Stat(archivePath)
+	mustNoError(t, err)
+	mustEqual(t, before.Size(), after.Size())
 }

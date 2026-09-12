@@ -14,6 +14,20 @@ go get -u go.osspkg.com/archives
 ## Archives
 
 * ar (Unix) - https://en.wikipedia.org/wiki/Ar_(Unix)
+* xz (single-stream XZ) - https://tukaani.org/xz/format.html
+* zst (Zstandard frames) - https://github.com/facebook/zstd/blob/dev/doc/zstd_compression_format.md
+
+The `xz` package provides a pure-Go XZ implementation without external
+processes or runtime dependencies. XZ is a single-stream format, so an
+archive has one logical member whose name is derived from the archive name:
+`data.xz` exposes the member `data`. `OpenWithOptions` can cap the dictionary
+and decompressed output size when processing untrusted archives.
+
+The `zst` package provides a pure-Go Zstandard implementation based on
+`github.com/klauspost/compress/zstd`, with concatenated and skippable frames,
+external dictionaries, bounded streaming decompression, and the same safe
+one-member file API as `xz`. A `data.zst` archive exposes the logical member
+`data`.
 
 ## License
 
