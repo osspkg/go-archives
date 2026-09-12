@@ -29,3 +29,21 @@ func TestUnit_NewBuffer(t *testing.T) {
 
 	require.Equal(t, h, h2)
 }
+
+func TestUnit_HeaderRejectsInvalidInput(t *testing.T) {
+	for _, data := range [][]byte{nil, []byte("short")} {
+		h := &ar.Header{}
+		require.NotPanics(t, func() {
+			require.Error(t, h.Parse(data))
+		})
+	}
+
+	h := &ar.Header{Size: -1}
+	_, err := h.Bytes()
+	require.Error(t, err)
+
+	valid, err := (&ar.Header{}).Bytes()
+	require.NoError(t, err)
+	valid[ar.HEAD_SIZE-2] = 'x'
+	require.Error(t, (&ar.Header{}).Parse(valid))
+}

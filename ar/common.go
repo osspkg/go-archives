@@ -20,6 +20,12 @@ var (
 	ErrUnsupportedValue  = errors.New("unsupported value")
 	ErrInvalidParseValue = errors.New("parsing error")
 	ErrInvalidFileFormat = errors.New("invalid file format")
+	ErrInvalidFileName   = errors.New("invalid file name")
+	ErrArchiveClosed     = errors.New("archive is closed")
 	ErrFileNotFound      = errors.New("file not found")
 	ErrFileExist         = errors.New("file already exist")
 )
+
+// maxArchiveFileSize is the largest size representable by the ten-byte AR
+// file-size field.
+const maxArchiveFileSize int64 = 9999999999

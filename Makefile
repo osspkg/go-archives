@@ -1,7 +1,7 @@
 
 .PHONY: install
 install:
-	go install github.com/osspkg/devtool@latest
+	go install github.com/osspkg/devtool@v0.2.5
 
 .PHONY: setup
 setup:
@@ -28,4 +28,3 @@ pre-commite: setup lint build tests
 
 .PHONY: ci
 ci: install setup lint build tests
-

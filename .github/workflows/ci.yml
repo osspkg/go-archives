@@ -14,14 +14,14 @@ jobs:
       matrix:
         go: [ '1.17', '1.18', '1.19' ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go }}
 
       - name: Run CI
         env:
-          COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
+          COVERALLS_TOKEN: ${{ github.event_name == 'push' && secrets.COVERALLS_TOKEN || '' }}
         run: make ci
