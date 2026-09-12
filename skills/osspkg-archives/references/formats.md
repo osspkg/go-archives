@@ -26,4 +26,4 @@ References:
 - [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878)
 - [klauspost/compress zstd package](https://pkg.go.dev/github.com/klauspost/compress/zstd)
 
-The repository remains on `go 1.17` and must not gain additional dependencies for these archive APIs. Compatibility tests may compare output with installed command-line tools, but production code remains self-contained Go code apart from the declared Zstandard module dependency.
+The repository remains on `go 1.25` and must not gain additional dependencies for these archive APIs. Compatibility tests may compare output with installed command-line tools, but production code remains self-contained Go code apart from the declared Zstandard module dependency.

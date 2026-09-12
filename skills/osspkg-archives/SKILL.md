@@ -9,7 +9,7 @@ Use this skill for implementation, review, debugging, or documentation work invo
 
 ## Working rules
 
-- Inspect the current package source and tests before writing examples or changing an API. Keep documentation compatible with `go 1.17` and the signatures that are actually exported.
+- Inspect the current package source and tests before writing examples or changing an API. Keep documentation compatible with `go 1.25` and the signatures that are actually exported.
 - Treat archive bytes, member names, archive paths, import paths, and export directories as untrusted input.
 - `ar` stores multiple named members. `xz` and `zst` expose one logical member whose name comes from the archive basename (`data.xz` becomes `data`, and `data.zst` becomes `data`).
 - Preserve the packages' atomic replacement, canonical-directory, temporary-file, cleanup, regular-file, and self-import protections. Do not change unrelated `ar/`, CI, or Makefile work unless the request includes it.
