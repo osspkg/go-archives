@@ -8,7 +8,6 @@ package ar_test
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"go.osspkg.com/archives/ar"
 )
 
@@ -21,29 +20,29 @@ func TestUnit_NewBuffer(t *testing.T) {
 		Mode:      0777,
 	}
 	b, err := h.Bytes()
-	require.NoError(t, err)
-	require.Equal(t, demo, b)
+	mustNoError(t, err)
+	mustEqual(t, demo, b)
 
 	h2 := &ar.Header{}
-	require.NoError(t, h2.Parse(demo))
+	mustNoError(t, h2.Parse(demo))
 
-	require.Equal(t, h, h2)
+	mustEqual(t, h, h2)
 }
 
 func TestUnit_HeaderRejectsInvalidInput(t *testing.T) {
 	for _, data := range [][]byte{nil, []byte("short")} {
 		h := &ar.Header{}
-		require.NotPanics(t, func() {
-			require.Error(t, h.Parse(data))
+		mustNotPanics(t, func() {
+			mustError(t, h.Parse(data))
 		})
 	}
 
 	h := &ar.Header{Size: -1}
 	_, err := h.Bytes()
-	require.Error(t, err)
+	mustError(t, err)
 
 	valid, err := (&ar.Header{}).Bytes()
-	require.NoError(t, err)
+	mustNoError(t, err)
 	valid[ar.HEAD_SIZE-2] = 'x'
-	require.Error(t, (&ar.Header{}).Parse(valid))
+	mustError(t, (&ar.Header{}).Parse(valid))
 }

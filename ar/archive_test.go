@@ -19,7 +19,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"go.osspkg.com/archives/ar"
 )
 
@@ -54,32 +53,32 @@ func TestUnit_ArchiveRead(t *testing.T) {
 	root := t.TempDir()
 	demoPath := filepath.Join(root, "demo.deb")
 	outputDir := filepath.Join(root, "123")
-	require.NoError(t, setUp(demoPath, demoDeb))
+	mustNoError(t, setUp(demoPath, demoDeb))
 
 	fd0, err := ar.Open(demoPath, os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 	defer fd0.Close()
 
 	buf := &bytes.Buffer{}
 
-	require.NoError(t, fd0.Read("debian-binary", buf))
-	require.Equal(t, "2.0\n", buf.String())
+	mustNoError(t, fd0.Read("debian-binary", buf))
+	mustEqual(t, "2.0\n", buf.String())
 
-	require.NoError(t, fd0.Export("control.tar.gz", outputDir))
+	mustNoError(t, fd0.Export("control.tar.gz", outputDir))
 
 	fd1, err := os.Open(filepath.Join(outputDir, "control.tar.gz"))
-	require.NoError(t, err)
-	require.NotNil(t, fd1)
+	mustNoError(t, err)
+	mustNotNil(t, fd1)
 	defer fd1.Close()
 
 	fd2, err := gzip.NewReader(fd1)
-	require.NoError(t, err)
-	require.NotNil(t, fd2)
+	mustNoError(t, err)
+	mustNotNil(t, fd2)
 	defer fd2.Close()
 
 	fd3 := tar.NewReader(fd2)
-	require.NotNil(t, fd3)
+	mustNotNil(t, fd3)
 
 	list := func() []string {
 		l := make([]string, 0)
@@ -95,7 +94,7 @@ func TestUnit_ArchiveRead(t *testing.T) {
 		}
 	}()
 
-	require.Equal(t, []string{"./", "./md5sums", "./control",
+	mustEqual(t, []string{"./", "./md5sums", "./control",
 		"./conffiles", "./preinst", "./postinst", "./prerm", "./postrm"}, list)
 }
 
@@ -104,33 +103,33 @@ func TestUnit_ArchiveCreate(t *testing.T) {
 	archivePath := filepath.Join(root, "demo1.ar")
 	sourcePath := filepath.Join(root, "ddddd.txt")
 	fd0, err := ar.Open(archivePath, os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 
-	require.NoError(t, fd0.Write("file1", []byte("file1 text"), os.ModePerm))
-	require.NoError(t, fd0.Write("file2", []byte("file2 text"), os.ModePerm))
-	require.Error(t, fd0.Write("file2", []byte("file2 text!"), os.ModePerm))
-	require.NoError(t, os.WriteFile(sourcePath, []byte("ddddd file"), fs.ModePerm))
-	require.NoError(t, fd0.Import(sourcePath, 0))
+	mustNoError(t, fd0.Write("file1", []byte("file1 text"), os.ModePerm))
+	mustNoError(t, fd0.Write("file2", []byte("file2 text"), os.ModePerm))
+	mustError(t, fd0.Write("file2", []byte("file2 text!"), os.ModePerm))
+	mustNoError(t, os.WriteFile(sourcePath, []byte("ddddd file"), fs.ModePerm))
+	mustNoError(t, fd0.Import(sourcePath, 0))
 	fd0.Close()
 
 	fd0, err = ar.Open(archivePath, os.ModePerm)
-	require.NoError(t, err)
-	require.NotNil(t, fd0)
+	mustNoError(t, err)
+	mustNotNil(t, fd0)
 	defer fd0.Close()
 
 	buf := &bytes.Buffer{}
 
-	require.NoError(t, fd0.Read("file1", buf))
-	require.Equal(t, "file1 text", buf.String())
+	mustNoError(t, fd0.Read("file1", buf))
+	mustEqual(t, "file1 text", buf.String())
 
 	buf.Reset()
-	require.NoError(t, fd0.Read("file2", buf))
-	require.Equal(t, "file2 text", buf.String())
+	mustNoError(t, fd0.Read("file2", buf))
+	mustEqual(t, "file2 text", buf.String())
 
 	buf.Reset()
-	require.NoError(t, fd0.Read("ddddd.txt", buf))
-	require.Equal(t, "ddddd file", buf.String())
+	mustNoError(t, fd0.Read("ddddd.txt", buf))
+	mustEqual(t, "ddddd file", buf.String())
 
 }
 
@@ -152,10 +151,10 @@ func (w *blockingWriter) Write(p []byte) (int, error) {
 func TestUnit_ArchiveConcurrentRead(t *testing.T) {
 	archivePath := filepath.Join(t.TempDir(), "concurrent.ar")
 	fd, err := ar.Open(archivePath, 0600)
-	require.NoError(t, err)
+	mustNoError(t, err)
 	defer fd.Close()
-	require.NoError(t, fd.Write("a", bytes.Repeat([]byte{'a'}, 512), 0600))
-	require.NoError(t, fd.Write("b", bytes.Repeat([]byte{'b'}, 512), 0600))
+	mustNoError(t, fd.Write("a", bytes.Repeat([]byte{'a'}, 512), 0600))
+	mustNoError(t, fd.Write("b", bytes.Repeat([]byte{'b'}, 512), 0600))
 
 	first := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
 	firstDone := make(chan error)
@@ -169,62 +168,62 @@ func TestUnit_ArchiveConcurrentRead(t *testing.T) {
 	go func() {
 		secondDone <- fd.Read("b", second)
 	}()
-	require.NoError(t, <-secondDone)
+	mustNoError(t, <-secondDone)
 	close(first.release)
-	require.NoError(t, <-firstDone)
+	mustNoError(t, <-firstDone)
 
-	require.Equal(t, bytes.Repeat([]byte{'a'}, 512), first.Bytes())
-	require.Equal(t, bytes.Repeat([]byte{'b'}, 512), second.Bytes())
+	mustEqual(t, bytes.Repeat([]byte{'a'}, 512), first.Bytes())
+	mustEqual(t, bytes.Repeat([]byte{'b'}, 512), second.Bytes())
 }
 
 func TestUnit_ArchiveListAfterReopen(t *testing.T) {
 	archivePath := filepath.Join(t.TempDir(), "list.ar")
 	fd, err := ar.Open(archivePath, 0600)
-	require.NoError(t, err)
-	require.NoError(t, fd.Write("file", []byte("data"), 0600))
-	require.NoError(t, fd.Close())
+	mustNoError(t, err)
+	mustNoError(t, fd.Write("file", []byte("data"), 0600))
+	mustNoError(t, fd.Close())
 
 	fd, err = ar.Open(archivePath, 0600)
-	require.NoError(t, err)
+	mustNoError(t, err)
 	defer fd.Close()
-	require.Len(t, fd.List(), 1)
+	mustLen(t, fd.List(), 1)
 }
 
 func TestUnit_ArchiveExportRejectsTraversalAndTruncates(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "archive.ar")
 	fd, err := ar.Open(archivePath, 0600)
-	require.NoError(t, err)
+	mustNoError(t, err)
 	defer fd.Close()
-	require.NoError(t, fd.Write("../escaped", []byte("data"), 0600))
-	require.ErrorIs(t, fd.Export("../escaped", filepath.Join(root, "out")), ar.ErrInvalidFileName)
+	mustNoError(t, fd.Write("../escaped", []byte("data"), 0600))
+	mustErrorIs(t, fd.Export("../escaped", filepath.Join(root, "out")), ar.ErrInvalidFileName)
 	_, err = os.Stat(filepath.Join(root, "escaped"))
-	require.ErrorIs(t, err, fs.ErrNotExist)
+	mustErrorIs(t, err, fs.ErrNotExist)
 
-	require.NoError(t, fd.Write("file", []byte("new"), 0600))
+	mustNoError(t, fd.Write("file", []byte("new"), 0600))
 	outputDir := filepath.Join(root, "output")
-	require.NoError(t, os.MkdirAll(outputDir, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "file"), []byte("old-tail"), 0600))
-	require.NoError(t, fd.Export("file", outputDir))
+	mustNoError(t, os.MkdirAll(outputDir, 0700))
+	mustNoError(t, os.WriteFile(filepath.Join(outputDir, "file"), []byte("old-tail"), 0600))
+	mustNoError(t, fd.Export("file", outputDir))
 	data, err := os.ReadFile(filepath.Join(outputDir, "file"))
-	require.NoError(t, err)
-	require.Equal(t, []byte("new"), data)
+	mustNoError(t, err)
+	mustEqual(t, []byte("new"), data)
 }
 
 func TestUnit_ArchiveImportUsesBasename(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source.txt")
-	require.NoError(t, os.WriteFile(source, []byte("source"), 0600))
+	mustNoError(t, os.WriteFile(source, []byte("source"), 0600))
 
 	fd, err := ar.Open(filepath.Join(root, "import.ar"), 0600)
-	require.NoError(t, err)
+	mustNoError(t, err)
 	defer fd.Close()
-	require.NoError(t, fd.Import(source, 0600))
+	mustNoError(t, fd.Import(source, 0600))
 
 	var data bytes.Buffer
-	require.NoError(t, fd.Read(filepath.Base(source), &data))
-	require.Equal(t, []byte("source"), data.Bytes())
-	require.ErrorIs(t, fd.Read(source, io.Discard), ar.ErrFileNotFound)
+	mustNoError(t, fd.Read(filepath.Base(source), &data))
+	mustEqual(t, []byte("source"), data.Bytes())
+	mustErrorIs(t, fd.Read(source, io.Discard), ar.ErrFileNotFound)
 }
 
 func TestUnit_ArchiveRejectsInvalidSize(t *testing.T) {
@@ -233,24 +232,24 @@ func TestUnit_ArchiveRejectsInvalidSize(t *testing.T) {
 	archiveData := append([]byte("!<arch>\n"), []byte(header)...)
 	archiveData = append(archiveData, 'x')
 	archivePath := filepath.Join(root, "invalid.ar")
-	require.NoError(t, os.WriteFile(archivePath, archiveData, 0600))
+	mustNoError(t, os.WriteFile(archivePath, archiveData, 0600))
 
 	_, err := ar.Open(archivePath, 0600)
-	require.Error(t, err)
+	mustError(t, err)
 }
 
 func TestUnit_ArchiveImportRejectsSelf(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "self.ar")
 	fd, err := ar.Open(archivePath, 0600)
-	require.NoError(t, err)
+	mustNoError(t, err)
 	defer fd.Close()
-	require.NoError(t, fd.Write("file", []byte("data"), 0600))
+	mustNoError(t, fd.Write("file", []byte("data"), 0600))
 	before, err := os.Stat(archivePath)
-	require.NoError(t, err)
+	mustNoError(t, err)
 
-	require.Error(t, fd.Import(archivePath, 0600))
+	mustError(t, fd.Import(archivePath, 0600))
 	after, err := os.Stat(archivePath)
-	require.NoError(t, err)
-	require.Equal(t, before.Size(), after.Size())
+	mustNoError(t, err)
+	mustEqual(t, before.Size(), after.Size())
 }
